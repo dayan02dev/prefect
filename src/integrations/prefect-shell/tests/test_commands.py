@@ -227,9 +227,7 @@ class TestShellOperation:
     async def test_output_keeps_lines_whole(self, method: str):
         line = "A" * 12 + "B" * 14 + "C" * 15 + "D" * 45
         # 139 KB of output arrives in several reads that end mid-line
-        op = ShellOperation(
-            commands=[f"yes {line} | head -1600"], stream_output=False
-        )
+        op = ShellOperation(commands=[f"yes {line} | head -1600"], stream_output=False)
         assert await self.execute(op, method) == [line] * 1600
 
     @pytest.mark.parametrize("method", ["run", "trigger"])
