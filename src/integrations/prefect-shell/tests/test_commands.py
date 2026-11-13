@@ -146,6 +146,27 @@ async def test_shell_run_command_large_stderr_does_not_hang():
     assert await asyncio.wait_for(test_flow(), timeout=30) == "done"
 
 
+async def test_shell_run_command_returns_while_background_process_holds_stderr():
+    @flow
+    async def test_flow() -> Union[list[str], str]:
+        # The background sleep inherits stderr and keeps it open after the
+        # shell exits
+        return await shell_run_command(command="sleep 30 >/dev/null & echo done")
+
+    assert await asyncio.wait_for(test_flow(), timeout=10) == "done"
+
+
+async def test_shell_run_command_error_while_background_process_holds_stderr():
+    @flow
+    async def test_flow() -> Union[list[str], str]:
+        return await shell_run_command(
+            command="sleep 30 >/dev/null & echo oops >&2; exit 1"
+        )
+
+    with pytest.raises(RuntimeError, match="oops"):
+        await asyncio.wait_for(test_flow(), timeout=10)
+
+
 class AsyncIter:
     def __init__(self, items: list[str]):
         self.items = items
