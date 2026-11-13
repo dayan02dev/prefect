@@ -105,6 +105,19 @@ async def test_shell_run_command_return_all():
     assert (await test_flow()) == ["work!", "yes!"]
 
 
+async def test_shell_run_command_return_all_keeps_lines_whole():
+    line = "A" * 12 + "B" * 14 + "C" * 15 + "D" * 45
+
+    @flow
+    async def test_flow() -> Union[list[str], str]:
+        # 139 KB of output arrives in several reads that end mid-line
+        return await shell_run_command(
+            command=f"yes {line} | head -1600", return_all=True
+        )
+
+    assert (await test_flow()) == [line] * 1600
+
+
 async def test_shell_run_command_no_output():
     @flow
     async def test_flow() -> Union[list[str], str]:
@@ -209,6 +222,15 @@ class TestShellOperation:
         assert any("the output" in m for m in stream_messages)
         assert any("good" in m for m in stream_messages)
         assert any("completed with return code 0" in m for m in log_messages)
+
+    @pytest.mark.parametrize("method", ["run", "trigger"])
+    async def test_output_keeps_lines_whole(self, method: str):
+        line = "A" * 12 + "B" * 14 + "C" * 15 + "D" * 45
+        # 139 KB of output arrives in several reads that end mid-line
+        op = ShellOperation(
+            commands=[f"yes {line} | head -1600"], stream_output=False
+        )
+        assert await self.execute(op, method) == [line] * 1600
 
     @pytest.mark.parametrize("method", ["run", "trigger"])
     async def test_stream_output(
