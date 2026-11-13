@@ -182,15 +182,22 @@ async def shell_run_command(
         async with await anyio.open_process(
             shell_command, env=current_env, cwd=cwd
         ) as process:
-            async for text in TextReceiveStream(process.stdout):
-                logger.log(level=stream_level, msg=text)
-                lines.extend(text.rstrip().split("\n"))
+
+            async def read_stdout() -> None:
+                async for text in TextReceiveStream(process.stdout):
+                    logger.log(level=stream_level, msg=text)
+                    lines.extend(text.rstrip().split("\n"))
+
+            async def read_stderr() -> bytes:
+                return b"".join([chunk async for chunk in process.stderr])
+
+            # Drain stderr alongside stdout: a command blocked writing to a
+            # full stderr pipe never closes stdout.
+            _, stderr_bytes = await asyncio.gather(read_stdout(), read_stderr())
 
             await process.wait()
             if process.returncode:
-                stderr = "\n".join(
-                    [text async for text in TextReceiveStream(process.stderr)]
-                )
+                stderr = stderr_bytes.decode()
                 if not stderr and lines:
                     stderr = f"{lines[-1]}\n"
                 msg = f"Command failed with exit code {process.returncode}:\n{stderr}"
