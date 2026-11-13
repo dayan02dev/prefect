@@ -12,10 +12,10 @@ import tempfile
 import threading
 from contextlib import AsyncExitStack, ExitStack, contextmanager
 from contextvars import copy_context
-from typing import IO, Any, Generator, Optional, Union
+from typing import IO, Any, AsyncIterator, Generator, Optional, Union
 
 import anyio
-from anyio.abc import Process
+from anyio.abc import ByteReceiveStream, Process
 from anyio.streams.text import TextReceiveStream
 from pydantic import DirectoryPath, Field, PrivateAttr
 
@@ -105,6 +105,24 @@ def _close_sync_process_tree(process: subprocess.Popen[bytes]) -> None:
             process.wait()
 
 
+async def _read_complete_lines(stream: ByteReceiveStream) -> AsyncIterator[str]:
+    """Read text from `stream` in pieces that each end at a line break.
+
+    A pipe read can stop partway through a line. Holding the unfinished line
+    back until the rest of it arrives keeps callers that split each piece into
+    lines from cutting that line in two (GH #13080).
+    """
+    unfinished: list[str] = []
+    async for text in TextReceiveStream(stream):
+        complete, newline, rest = text.rpartition("\n")
+        if newline:
+            yield "".join([*unfinished, complete, newline])
+            unfinished.clear()
+        unfinished.append(rest)
+    if remainder := "".join(unfinished):
+        yield remainder
+
+
 @task
 async def shell_run_command(
     command: str,
@@ -182,7 +200,7 @@ async def shell_run_command(
         async with await anyio.open_process(
             shell_command, env=current_env, cwd=cwd
         ) as process:
-            async for text in TextReceiveStream(process.stdout):
+            async for text in _read_complete_lines(process.stdout):
                 logger.log(level=stream_level, msg=text)
                 lines.extend(text.rstrip().split("\n"))
 
@@ -254,7 +272,7 @@ class ShellProcess(JobRun[list[str]]):
         """
         Capture output from source (async version for anyio Process).
         """
-        async for output in TextReceiveStream(source):
+        async for output in _read_complete_lines(source):
             text = output.rstrip()
             if self._shell_operation.stream_output:
                 self.logger.info(self._format_output_log(output_label, text))
