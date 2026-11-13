@@ -26,6 +26,7 @@ from prefect.logging import get_run_logger
 from prefect.utilities.processutils import open_process
 
 _SHELL_TERMINATE_GRACE_SECONDS = 5.0
+_STDERR_DRAIN_SECONDS = 1.0
 _DEFAULT_LOG_PREFIX = "PID {pid} {label}:\n"
 
 
@@ -179,25 +180,33 @@ async def shell_run_command(
         shell_command = [shell, tmp.name]
 
         lines: list[str] = []
+        stderr_chunks: list[bytes] = []
         async with await anyio.open_process(
             shell_command, env=current_env, cwd=cwd
         ) as process:
 
-            async def read_stdout() -> None:
+            async def read_stderr() -> None:
+                async for chunk in process.stderr:
+                    stderr_chunks.append(chunk)
+
+            # Read stderr while the command runs: a command blocked writing to a
+            # full stderr pipe never closes stdout or exits.
+            stderr_reader = asyncio.create_task(read_stderr())
+            try:
                 async for text in TextReceiveStream(process.stdout):
                     logger.log(level=stream_level, msg=text)
                     lines.extend(text.rstrip().split("\n"))
 
-            async def read_stderr() -> bytes:
-                return b"".join([chunk async for chunk in process.stderr])
+                await process.wait()
+                if process.returncode:
+                    # A background process started by the command can keep
+                    # stderr open, so don't wait for its end indefinitely.
+                    await asyncio.wait([stderr_reader], timeout=_STDERR_DRAIN_SECONDS)
+            finally:
+                stderr_reader.cancel()
 
-            # Drain stderr alongside stdout: a command blocked writing to a
-            # full stderr pipe never closes stdout.
-            _, stderr_bytes = await asyncio.gather(read_stdout(), read_stderr())
-
-            await process.wait()
             if process.returncode:
-                stderr = stderr_bytes.decode()
+                stderr = b"".join(stderr_chunks).decode()
                 if not stderr and lines:
                     stderr = f"{lines[-1]}\n"
                 msg = f"Command failed with exit code {process.returncode}:\n{stderr}"
