@@ -135,6 +135,17 @@ async def test_shell_run_command_update_current_env():
     assert result[1] == "test value"
 
 
+async def test_shell_run_command_large_stderr_does_not_hang():
+    @flow
+    async def test_flow() -> Union[list[str], str]:
+        # 1.2 MB of stderr, far more than an OS pipe buffer holds
+        return await shell_run_command(
+            command="yes error | head -n 200000 >&2 && echo done"
+        )
+
+    assert await asyncio.wait_for(test_flow(), timeout=30) == "done"
+
+
 class AsyncIter:
     def __init__(self, items: list[str]):
         self.items = items
